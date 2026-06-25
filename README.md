@@ -8,6 +8,10 @@
 - 官方模型：`https://huggingface.co/baidu/Unlimited-OCR`
 - 论文：`https://arxiv.org/abs/2606.23050`
 
+本适配版的预生成 mixed FP4 OpenVINO 产物：
+
+- Hugging Face：`https://huggingface.co/sublatesublate-design/unlimited-ocr-openvino`
+
 本仓库不直接托管模型权重，也不提交 OpenVINO IR、cache 和 OCR 输出。这些文件体积很大，而且通常需要按本机硬件、OpenVINO 版本、页数和 prompt 重新生成。
 
 ## 已实现内容
@@ -59,6 +63,14 @@ python -m pip install torch transformers openvino nncf pymupdf pillow numpy safe
 
 ```shell
 python -m openvino_adapt.download_model --local-dir models/Unlimited-OCR
+```
+
+下载预生成 mixed FP4 sparse decode 产物：
+
+```shell
+hf download sublatesublate-design/unlimited-ocr-openvino ^
+  --repo-type model ^
+  --local-dir openvino_models/sparse_decode_past677_mixed_fp4
 ```
 
 导出基础 OpenVINO 图：
