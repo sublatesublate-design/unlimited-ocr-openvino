@@ -15,6 +15,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--local-dir", default="openvino_models/sparse_decode_past677_mixed_fp4")
     parser.add_argument("--only", choices=("all", "bins", "small-bins", "large-bins"), default="bins")
     parser.add_argument("--max-files", type=int, default=0, help="0 means no limit.")
+    parser.add_argument("--strategy", choices=("file", "folder"), default="file")
     parser.add_argument("--retries", type=int, default=5)
     parser.add_argument("--sleep", type=float, default=10.0)
     parser.add_argument("--state-json", default="outputs_openvino_hf_upload/hf_resume_state.json")
@@ -58,6 +59,33 @@ def main() -> int:
         "failed": [],
     }
     print(json.dumps({"missing": len(missing), "mode": args.only}, ensure_ascii=False))
+
+    if args.strategy == "folder":
+        patterns = [remote_path for _, remote_path in missing]
+        last_error = ""
+        for attempt in range(1, args.retries + 1):
+            try:
+                print(f"folder upload {len(patterns)} files attempt {attempt}")
+                api.upload_folder(
+                    folder_path=str(root),
+                    allow_patterns=patterns,
+                    ignore_patterns=[".cache/*"],
+                    repo_id=args.repo_id,
+                    repo_type=args.repo_type,
+                    commit_message=f"Upload {args.only} OpenVINO artifact batch ({len(patterns)} files)",
+                )
+                state["uploaded"].extend(patterns)
+                state_path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+                print(json.dumps({"uploaded": len(state["uploaded"]), "failed": 0}, ensure_ascii=False))
+                return 0
+            except Exception as exc:  # noqa: BLE001
+                last_error = repr(exc)
+                print(f"  failed: {last_error}")
+                time.sleep(args.sleep * attempt)
+        state["failed"].append({"path": "<folder-batch>", "error": last_error})
+        state_path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(json.dumps({"uploaded": 0, "failed": 1}, ensure_ascii=False))
+        return 2
 
     for index, (local_path, remote_path) in enumerate(missing, 1):
         ok = False
