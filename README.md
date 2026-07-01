@@ -1,6 +1,6 @@
 # Unlimited-OCR OpenVINO: A Research Adapter for Sparse MoE OCR Decoding
 
-这是一个面向 Intel CPU/GPU 的 **Unlimited-OCR OpenVINO 研究适配版**。它不是简单地把模型导出成一个 OpenVINO `generate()` 图，而是把 Unlimited-OCR 的视觉编码、预填充、R-SWA 缓存、12 层稀疏 MoE 解码、专家路由和长输出基准测试拆开实现，并在本地 Windows + Intel GPU 环境中验证可运行路径。
+这是一个面向 Intel CPU/GPU 的 **Unlimited-OCR OpenVINO 研究适配版**。项目将 Unlimited-OCR 的视觉编码、预填充、R-SWA 缓存、12 层稀疏 MoE 解码、专家路由和长输出基准测试拆成可复现的 OpenVINO 工程路径，并在本地 Windows + Intel GPU 环境中验证可运行性。
 
 上游项目：
 
@@ -208,24 +208,17 @@ python -m openvino_adapt.serve_ocr_openvino ^
 | `ring_window=64 / past_len=613` | persistent second job `~4.57 tok/s` | 没超过 `past677` |
 | `ring_window=32 / past_len=581` | persistent second job `~3.94 tok/s` | 明显变慢 |
 
-## What This Is Not
+## Scope and Roadmap
 
-这不是完整产品化 OCR 套件。当前版本不承诺：
+当前版本聚焦于 **Unlimited-OCR 到 OpenVINO 的模型级适配和 sparse decoder runtime**。它已经覆盖从模型拆图、KV 缓存、MoE 路由、专家融合、量化实验到连续多页 OCR CLI 的完整研究路径。
 
-- 高吞吐批量扫书；
-- 任意页数、任意 prompt 的通用 artifact；
-- 全 GPU sparse decode 在所有输入上的数值稳定性；
-- OpenVINO 原生 INT2；
-- 原始、清理、校对三层文档交付；
-- 与 CUDA/SGLang 官方路径同等速度。
+后续最有价值的方向：
 
-当前更准确的定位是：
-
-```text
-Unlimited-OCR -> OpenVINO research adapter
-```
-
-它证明了一条可运行路线，也暴露了 Intel GPU + OpenVINO 上 sparse MoE VLM decoder 的实际瓶颈。
+- 将 fused-hot-gather 路由 profile 做成面向真实文档集的自动流程；
+- 将 continuous OCR 扩展成 raw / cleaned / reviewed 三层输出；
+- 引入页眉页脚、页码、跨页段落合并和低置信度区域报告；
+- 用小窗口 LLM 校对替代让 VLM 生成整页长文本；
+- 继续探索更适合 Intel GPU 的图内 top-k gather 和 KV 常驻策略。
 
 ## Repository Layout
 
@@ -236,21 +229,6 @@ Unlimited-OCR -> OpenVINO research adapter
 - `openvino_adapt/manage_openvino_cache.py`：OpenVINO cache 统计和裁剪。
 - `research/UNLIMITED_OCR_OPENVINO_NOTES.md`：研究记录和实测结果。
 - `infer.py`：上游 SGLang/PyTorch 推理入口保留文件。
-
-## Files Not Tracked by Git
-
-`.gitignore` 已排除：
-
-- `models/`
-- `openvino_models/`
-- `openvino_cache*/`
-- `outputs*/`
-- `*.safetensors`
-- `*.onnx`
-- `*.gguf`
-- `*.bin`
-
-这些内容体积大、与本机硬件和 OpenVINO 版本强相关，应该通过 Hugging Face 下载或在本地重新导出。
 
 ## Citation
 
