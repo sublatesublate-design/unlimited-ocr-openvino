@@ -8,7 +8,7 @@ from collections.abc import Sequence
 import numpy as np
 
 from .artifacts import ArtifactSet, validate_prompt_and_decode_lengths
-from .logits_processors import SlidingWindowNoRepeatNgram, select_greedy_token
+from .logits_processors import SlidingWindowNoRepeatNgram, select_greedy_token, select_greedy_token_from_topk
 from .preprocess import preprocess_base_image
 from .runtime import add_runtime_args, compile_artifacts, component_devices, make_core
 from .run_prefill_no_cache import encode_prompt_for_pages
@@ -101,6 +101,7 @@ def generate_from_compiled(
     ngram_window: int = 128,
 ) -> dict:
     started = time.time()
+    stage_timings: dict[str, float] = {}
     if images is None:
         if image is None:
             raise ValueError("Either image or images must be provided.")
@@ -111,9 +112,13 @@ def generate_from_compiled(
     input_ids, image_slice = encode_prompt_for_pages(tokenizer, prompt, page_count=len(images))
     prompt_sequence = input_ids[0].tolist()
     seq_len = input_ids.shape[1]
+    embed_start = time.perf_counter()
     text_embeds = next(iter(embed([input_ids]).values()))
+    stage_timings["embed_seconds"] = time.perf_counter() - embed_start
     image_inputs = np.concatenate([preprocess_base_image(page) for page in images], axis=0)
+    vision_start = time.perf_counter()
     image_embeds = next(iter(vision([image_inputs]).values())).reshape(1, -1, text_embeds.shape[-1])
+    stage_timings["vision_seconds"] = time.perf_counter() - vision_start
     if image_embeds.shape[1] != image_slice.stop - image_slice.start:
         raise ValueError(f"visual token count mismatch: {image_embeds.shape[1]} vs {image_slice}")
     inputs_embeds = text_embeds.copy()
@@ -124,7 +129,9 @@ def generate_from_compiled(
         causal_mask(seq_len),
         np.arange(seq_len, dtype=np.int64).reshape(1, -1),
     ]
+    prefill_start = time.perf_counter()
     prefill_outs = list(prefill(prefill_inputs).values())
+    stage_timings["prefill_seconds"] = time.perf_counter() - prefill_start
     logits = prefill_outs[0]
     prefill_keys = prefill_outs[1::2]
     prefill_values = prefill_outs[2::2]
@@ -156,7 +163,10 @@ def generate_from_compiled(
         values[layer][:, :, :prefill_len, :] = prefill_values[layer]
 
     stored_generated = 0
+    decode_loop_start = time.perf_counter()
+    decode_step_seconds: list[float] = []
     while len(generated) < max_new_tokens and current_token != eos_token_id:
+        step_start = time.perf_counter()
         active_past = prefill_len + min(stored_generated, ring_window - 1)
         token_ids = np.asarray([[current_token]], dtype=np.int64)
         position_ids = np.asarray([[prefill_len + stored_generated]], dtype=np.int64)
@@ -174,7 +184,7 @@ def generate_from_compiled(
             from .run_sparse_decode_openvino import run_sparse_decode
 
             hidden = next(iter(embed([token_ids]).values()))
-            logits, new_keys, new_values, timings = run_sparse_decode(
+            final_output, new_keys, new_values, timings = run_sparse_decode(
                 sparse_runtime,
                 sparse_metadata,
                 hidden.astype(np.float32),
@@ -186,6 +196,7 @@ def generate_from_compiled(
                 compile_all_experts=False,
             )
             sparse_step_timings.append(timings)
+            logits = final_output
 
         if stored_generated < ring_window - 1:
             slot = prefill_len + stored_generated
@@ -211,9 +222,17 @@ def generate_from_compiled(
             values[layer][:, :, slot : slot + 1, :] = new_values[layer]
 
         stored_generated += 1
-        current_token = select_greedy_token(logits[0, -1], prompt_sequence + generated, processor)
+        if isinstance(logits, dict):
+            if "argmax_indices" in logits:
+                current_token = int(logits["argmax_indices"][0, -1])
+            else:
+                current_token = select_greedy_token_from_topk(logits["topk_indices"][0, -1], prompt_sequence + generated, processor)
+        else:
+            current_token = select_greedy_token(logits[0, -1], prompt_sequence + generated, processor)
         generated.append(current_token)
+        decode_step_seconds.append(time.perf_counter() - step_start)
 
+    stage_timings["decode_loop_seconds"] = time.perf_counter() - decode_loop_start
     text = tokenizer.decode(generated, skip_special_tokens=False)
     elapsed = time.time() - started
     return {
@@ -222,6 +241,8 @@ def generate_from_compiled(
         "generated_ids": generated,
         "text": text,
         "decode_seconds": elapsed,
+        "stage_timings": stage_timings,
+        "decode_step_seconds": decode_step_seconds,
         "tokens_per_second": (len(generated) / elapsed) if elapsed > 0 else 0.0,
         "decoder": "sparse" if sparse_runtime is not None else "dense",
         "sparse_step_timings": sparse_step_timings,

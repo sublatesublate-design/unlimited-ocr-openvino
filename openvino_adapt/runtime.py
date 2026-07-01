@@ -41,6 +41,19 @@ def add_runtime_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--cache-dir", default="", help="Optional OpenVINO model/kernel cache directory.")
 
 
+def parse_ov_config(items: list[str] | None) -> dict[str, str]:
+    config: dict[str, str] = {}
+    for item in items or []:
+        if "=" not in item:
+            raise ValueError(f"OpenVINO config must be KEY=VALUE, got: {item}")
+        key, value = item.split("=", 1)
+        key = key.strip()
+        if not key:
+            raise ValueError(f"OpenVINO config key is empty: {item}")
+        config[key] = value.strip()
+    return config
+
+
 def component_devices(args: argparse.Namespace) -> ComponentDevices:
     default = args.device
     return ComponentDevices(

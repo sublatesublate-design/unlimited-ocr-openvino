@@ -7,7 +7,7 @@ import tempfile
 from pathlib import Path
 
 from .artifacts import ArtifactSet, validate_prompt_and_decode_lengths
-from .runtime import add_runtime_args, compile_artifacts, component_devices, make_core
+from .runtime import add_runtime_args, compile_artifacts, component_devices, make_core, parse_ov_config
 from .run_generate_openvino import generate_from_compiled
 from .run_prefill_no_cache import encode_prompt_for_pages
 
@@ -30,6 +30,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sparse-artifact-dir", default="openvino_models/sparse_decode_past677")
     parser.add_argument("--sparse-device", default="", help="OpenVINO device for sparse layer graphs. Defaults to --decode-device/--device.")
     parser.add_argument("--sparse-expert-device", default="", help="OpenVINO device for sparse expert graphs. Defaults to --sparse-device.")
+    parser.add_argument("--sparse-hot-pack-dir", default="", help="Optional root/single-layer dir containing hot_expert_pack.xml.")
+    parser.add_argument("--sparse-hot-pack-device", default="", help="OpenVINO device for hot expert pack graphs.")
+    parser.add_argument("--sparse-precompile-static", action="store_true", help="Compile sparse layer/add/final/hot-pack graphs before generation.")
+    parser.add_argument("--sparse-precompile-all-experts", action="store_true", help="Also compile all fallback expert graphs before generation.")
+    parser.add_argument("--sparse-final-argmax", action="store_true", help="Use final_norm_argmax.xml for sparse greedy generation when present.")
+    parser.add_argument("--sparse-final-topk", type=int, default=0, help="Use final_norm_topkK.xml for sparse greedy generation when present.")
+    parser.add_argument("--sparse-config", nargs="*", default=[], help="Extra sparse OpenVINO compile config as KEY=VALUE pairs.")
     parser.add_argument("--prompt", default="<image>document parsing.")
     parser.add_argument("--max-new-tokens", type=int, default=128)
     parser.add_argument("--ring-window", type=int, default=128)
@@ -152,7 +159,25 @@ def main() -> int:
             devices=devices,
         )
         sparse_device = args.sparse_device or devices.decode
-        sparse_runtime = SparseDecodeRuntime(sparse_dir, sparse_device, args.sparse_expert_device or sparse_device, args.cache_dir)
+        sparse_runtime = SparseDecodeRuntime(
+            sparse_dir,
+            sparse_device,
+            args.sparse_expert_device or sparse_device,
+            args.cache_dir,
+            args.sparse_hot_pack_dir,
+            args.sparse_hot_pack_device or args.sparse_expert_device or sparse_device,
+            parse_ov_config(args.sparse_config),
+            args.sparse_final_topk,
+            args.sparse_final_argmax,
+        )
+        sparse_precompile = {}
+        if args.sparse_precompile_static:
+            layers = [int(layer_id) for layer_id in sparse_metadata["layers"].keys()]
+            sparse_precompile = sparse_runtime.precompile_static(
+                sparse_metadata,
+                layers,
+                args.sparse_precompile_all_experts,
+            )
 
     manifest = {
         "source": args.image or args.image_dir or args.pdf,
@@ -167,6 +192,14 @@ def main() -> int:
         "mode": "continuous" if args.continuous else "per_page",
         "decoder": args.decoder,
         "sparse_artifact_dir": args.sparse_artifact_dir if args.decoder == "sparse" else "",
+        "sparse_device": args.sparse_device or devices.decode if args.decoder == "sparse" else "",
+        "sparse_expert_device": args.sparse_expert_device or args.sparse_device or devices.decode if args.decoder == "sparse" else "",
+        "sparse_hot_pack_dir": args.sparse_hot_pack_dir if args.decoder == "sparse" else "",
+        "sparse_hot_pack_device": args.sparse_hot_pack_device or args.sparse_expert_device or args.sparse_device or devices.decode if args.decoder == "sparse" else "",
+        "sparse_config": parse_ov_config(args.sparse_config) if args.decoder == "sparse" else {},
+        "sparse_final_argmax": args.sparse_final_argmax if args.decoder == "sparse" else False,
+        "sparse_final_topk": args.sparse_final_topk if args.decoder == "sparse" else 0,
+        "sparse_precompile": sparse_precompile if args.decoder == "sparse" else {},
     }
     combined_parts: list[str] = []
     try:

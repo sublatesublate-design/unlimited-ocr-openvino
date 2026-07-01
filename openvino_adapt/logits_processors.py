@@ -49,3 +49,20 @@ def select_greedy_token(
     if processor is not None:
         scores = processor.apply(sequence, scores)
     return int(np.argmax(scores))
+
+
+def select_greedy_token_from_topk(
+    token_ids: np.ndarray,
+    sequence: list[int],
+    processor: SlidingWindowNoRepeatNgram | None = None,
+) -> int:
+    candidates = [int(token_id) for token_id in np.asarray(token_ids).reshape(-1)]
+    if not candidates:
+        raise ValueError("top-k token list is empty")
+    if processor is None or not processor.enabled:
+        return candidates[0]
+    banned = processor.banned_tokens(sequence)
+    for token_id in candidates:
+        if token_id not in banned:
+            return token_id
+    return candidates[0]
